@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes import router as api_router
+
 app = FastAPI(
     title="Intermodal Container Reposition Copilot",
     description="Agentic AI for empty-container repositioning with human-in-the-loop approval",
@@ -13,6 +15,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(api_router, prefix="/api")
 
 
 @app.get("/health")
