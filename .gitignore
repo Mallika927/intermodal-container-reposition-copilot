@@ -1,0 +1,35 @@
+# ----- Secrets -----
+.env
+.env.local
+.env.*.local
+*.pem
+
+# ----- Python / FastAPI -----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+
+# ----- Angular / Node -----
+node_modules/
+dist/
+.angular/
+.nx/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+
+# ----- IDE / OS -----
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# ----- Claude Code (local settings only) -----
+.claude/settings.local.json
