@@ -25,22 +25,32 @@ from app.data.network import LANES, TERMINALS
 
 BOOKING_WINDOW_HOURS = 72
 
-# (on_hand_empty range, dwell_avg_days range, lot_utilization_pct range)
-_INVENTORY_RANGES: dict[TerminalProfile, tuple[tuple[int, int], tuple[float, float], tuple[int, int]]] = {
-    TerminalProfile.SURPLUS: ((300, 450), (3.0, 5.0), (85, 95)),
-    TerminalProfile.DEFICIT: ((30, 60), (0.5, 1.5), (40, 70)),
-    TerminalProfile.BALANCED: ((80, 150), (1.5, 3.0), (55, 80)),
+# dwell_avg_days range per profile — unaffected by the demand-derived
+# on-hand math below.
+_DWELL_RANGES: dict[TerminalProfile, tuple[float, float]] = {
+    TerminalProfile.SURPLUS: (3.0, 5.0),
+    TerminalProfile.DEFICIT: (0.5, 1.5),
+    TerminalProfile.BALANCED: (1.5, 3.0),
+}
+
+# on_hand_empty = round(demand_72h * multiplier). Surplus terminals carry
+# 1.7-2.2x their 72h demand in empties; deficit terminals only 0.15-0.35x;
+# balanced terminals roughly track demand.
+_ON_HAND_MULTIPLIER_RANGES: dict[TerminalProfile, tuple[float, float]] = {
+    TerminalProfile.SURPLUS: (1.7, 2.2),
+    TerminalProfile.DEFICIT: (0.15, 0.35),
+    TerminalProfile.BALANCED: (0.8, 1.15),
 }
 
 # Anomaly variants: a deficit terminal generating healthy, or a balanced
 # terminal generating mildly short, so imbalance detection isn't trivial.
+# Implemented by swapping to an adjacent profile's multiplier/dwell band,
+# never by nudging the derived on_hand afterward.
 _ANOMALY_CHANCE = 0.10
-_DEFICIT_HEALTHY_RANGES: tuple[tuple[int, int], tuple[float, float], tuple[int, int]] = (
-    (150, 220), (2.0, 3.5), (60, 80)
-)
-_BALANCED_SHORT_RANGES: tuple[tuple[int, int], tuple[float, float], tuple[int, int]] = (
-    (40, 70), (0.8, 1.8), (45, 65)
-)
+_DEFICIT_HEALTHY_DWELL_RANGE = (2.0, 3.5)
+_BALANCED_SHORT_DWELL_RANGE = (0.8, 1.8)
+
+_LOT_CAPACITY_SAFETY_FACTOR = 0.97
 
 # (min, max) demand factor applied to daily_load_base * 3 for 72h bookings.
 _DEMAND_FACTOR_RANGES: dict[TerminalProfile, tuple[float, float]] = {
@@ -58,18 +68,26 @@ def _abbr(terminal_code: str) -> str:
     return terminal_code.split("-")[0][:2].upper()
 
 
-def _generate_inventory(terminal: Terminal, rng: Random, snapshot_ts: datetime) -> InventorySnapshot:
+def _generate_inventory(
+    terminal: Terminal, rng: Random, snapshot_ts: datetime, demand_72h: int
+) -> InventorySnapshot:
     anomaly_roll = rng.random()
     if terminal.profile == TerminalProfile.DEFICIT and anomaly_roll < _ANOMALY_CHANCE:
-        on_hand_range, dwell_range, util_range = _DEFICIT_HEALTHY_RANGES
+        mult_range = _ON_HAND_MULTIPLIER_RANGES[TerminalProfile.BALANCED]
+        dwell_range = _DEFICIT_HEALTHY_DWELL_RANGE
     elif terminal.profile == TerminalProfile.BALANCED and anomaly_roll < _ANOMALY_CHANCE:
-        on_hand_range, dwell_range, util_range = _BALANCED_SHORT_RANGES
+        mult_range = _ON_HAND_MULTIPLIER_RANGES[TerminalProfile.DEFICIT]
+        dwell_range = _BALANCED_SHORT_DWELL_RANGE
     else:
-        on_hand_range, dwell_range, util_range = _INVENTORY_RANGES[terminal.profile]
+        mult_range = _ON_HAND_MULTIPLIER_RANGES[terminal.profile]
+        dwell_range = _DWELL_RANGES[terminal.profile]
 
-    on_hand_empty = rng.randint(*on_hand_range)
+    on_hand_empty = round(demand_72h * rng.uniform(*mult_range))
+    if on_hand_empty > terminal.lot_capacity:
+        on_hand_empty = round(terminal.lot_capacity * _LOT_CAPACITY_SAFETY_FACTOR)
+
     dwell_avg_days = round(rng.uniform(*dwell_range), 2)
-    lot_utilization_pct = rng.randint(*util_range)
+    lot_utilization_pct = round(on_hand_empty / terminal.lot_capacity * 100)
 
     return InventorySnapshot(
         id=f"INV-{terminal.code}-{snapshot_ts:%Y%m%d%H}",
@@ -138,8 +156,10 @@ def generate_network_state(seed: int, snapshot_ts: datetime) -> NetworkState:
     inventory: list[InventorySnapshot] = []
     bookings: list[BookingForecast] = []
     for terminal in TERMINALS:
-        inventory.append(_generate_inventory(terminal, rng, snapshot_ts))
-        bookings.append(_generate_booking(terminal, rng, snapshot_ts))
+        booking = _generate_booking(terminal, rng, snapshot_ts)
+        bookings.append(booking)
+        demand_72h = booking.booked_loads + booking.forecast_loads
+        inventory.append(_generate_inventory(terminal, rng, snapshot_ts, demand_72h))
     trains = [
         train
         for lane in LANES

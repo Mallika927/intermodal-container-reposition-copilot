@@ -25,7 +25,7 @@ def test_different_seed_differs() -> None:
 
 
 def test_structural_invariant() -> None:
-    for seed in range(1, 21):
+    for seed in range(1, 201):
         state = generate_network_state(seed=seed, snapshot_ts=FIXED_SNAPSHOT_TS)
 
         demand_72h: dict[str, int] = {}

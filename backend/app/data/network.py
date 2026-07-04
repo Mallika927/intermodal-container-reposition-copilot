@@ -15,14 +15,14 @@ TERMINALS: list[Terminal] = [
         name="Chicago Global IV",
         profile=TerminalProfile.SURPLUS,
         daily_load_base=180,
-        lot_capacity=520,
+        lot_capacity=1150,
     ),
     Terminal(
         code="LAX-ICTF",
         name="Los Angeles ICTF",
         profile=TerminalProfile.SURPLUS,
         daily_load_base=220,
-        lot_capacity=600,
+        lot_capacity=1400,
     ),
     Terminal(
         code="DAL-ITD",
@@ -64,7 +64,7 @@ TERMINALS: list[Terminal] = [
         name="Seattle South IG",
         profile=TerminalProfile.SURPLUS,
         daily_load_base=90,
-        lot_capacity=320,
+        lot_capacity=580,
     ),
 ]
 
