@@ -57,10 +57,19 @@ class FakeMessage:
 class FakeMessagesResource:
     def __init__(self, responses: list[FakeMessage]) -> None:
         self._responses = list(responses)
-        self.call_count = 0
+        self.calls: list[dict[str, Any]] = []
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
 
     async def create(self, **kwargs: Any) -> FakeMessage:
-        self.call_count += 1
+        # Snapshot the messages list — it's the same mutable list object the
+        # loop keeps appending to, so a live reference would show later
+        # state instead of what was actually sent for this call.
+        snapshot = dict(kwargs)
+        snapshot["messages"] = list(kwargs["messages"])
+        self.calls.append(snapshot)
         if not self._responses:
             raise AssertionError("FakeClient ran out of scripted responses")
         return self._responses.pop(0)
@@ -79,6 +88,18 @@ def _tool_use_message(tool_use_id: str, name: str, tool_input: dict[str, Any]) -
     return FakeMessage(
         stop_reason="tool_use",
         content=[FakeContentBlock(type="tool_use", id=tool_use_id, name=name, input=tool_input)],
+    )
+
+
+def _parallel_tool_use_message(*calls: tuple[str, str, dict[str, Any]]) -> FakeMessage:
+    """Build one assistant turn containing multiple tool_use blocks, as the
+    model does when it issues parallel tool calls."""
+    return FakeMessage(
+        stop_reason="tool_use",
+        content=[
+            FakeContentBlock(type="tool_use", id=call_id, name=name, input=tool_input)
+            for call_id, name, tool_input in calls
+        ],
     )
 
 
@@ -158,6 +179,64 @@ def test_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert fake.messages.call_count == 3
     model_turns = [entry for entry in result.trace if entry["type"] == "tool_call"]
     assert len(model_turns) == 3
+
+
+def test_parallel_tool_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    submission = _seed_42_top_option_submission()
+    fake = _install_fake_client(
+        monkeypatch,
+        [
+            _parallel_tool_use_message(
+                ("tu_1", "get_imbalance_report", {}),
+                ("tu_2", "get_candidate_options", {}),
+            ),
+            _tool_use_message("tu_3", "submit_recommendations", submission),
+        ],
+    )
+
+    result = asyncio.run(run_analysis_cycle(seed=42))
+
+    assert result.no_action_rationale is None
+    assert len(result.recommendations) == 1
+    assert fake.messages.call_count == 2
+
+    # The second API call's messages must end with a single user message
+    # containing exactly two tool_result blocks, matching ids in order —
+    # this is what the API rejected when only the first was answered.
+    second_call_messages = fake.messages.calls[1]["messages"]
+    tool_result_message = second_call_messages[-1]
+    assert tool_result_message["role"] == "user"
+    tool_result_blocks = tool_result_message["content"]
+    assert [block["type"] for block in tool_result_blocks] == ["tool_result", "tool_result"]
+    assert [block["tool_use_id"] for block in tool_result_blocks] == ["tu_1", "tu_2"]
+
+
+def test_parallel_submit_with_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    submission = _seed_42_top_option_submission()
+    fake = _install_fake_client(
+        monkeypatch,
+        [
+            _tool_use_message("tu_1", "get_imbalance_report", {}),
+            _parallel_tool_use_message(
+                ("tu_2", "get_candidate_options", {}),
+                ("tu_3", "submit_recommendations", submission),
+            ),
+        ],
+    )
+
+    result = asyncio.run(run_analysis_cycle(seed=42))
+
+    assert result.no_action_rationale is None
+    assert len(result.recommendations) == 1
+    assert result.recommendations[0].source_option_id == "OPT-LAX-ICTF-DEN-RG-cover"
+    assert fake.messages.call_count == 2
+
+    # The submission succeeded without a follow-up API call, but the trace
+    # must still show a tool_result for every tool_use, including submit.
+    tool_calls = [entry["name"] for entry in result.trace if entry["type"] == "tool_call"]
+    tool_results = [entry["name"] for entry in result.trace if entry["type"] == "tool_result"]
+    assert tool_calls == ["get_imbalance_report", "get_candidate_options", "submit_recommendations"]
+    assert tool_results == ["get_imbalance_report", "get_candidate_options", "submit_recommendations"]
 
 
 def test_audit_gate_catches_altered_number(monkeypatch: pytest.MonkeyPatch) -> None:

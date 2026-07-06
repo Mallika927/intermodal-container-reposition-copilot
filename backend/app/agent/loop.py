@@ -5,6 +5,7 @@ ever treated as trustworthy output.
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,7 @@ from fastapi import HTTPException
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.schemas import CycleResult
 from app.agent.settings import get_agent_settings
+from app.agent.store import save_cycle
 from app.agent.tools import TOOL_DEFINITIONS, execute_tool
 from app.data.loader import get_network_state
 from app.data.models import NetworkState, Recommendation, RecommendationStatus
@@ -23,9 +25,13 @@ from app.scoring.candidates import generate_candidates
 from app.scoring.imbalance import compute_imbalance
 from app.scoring.params import ScoringParams, get_scoring_params
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MODEL = "claude-sonnet-4-6"
 MAX_TOOL_ITERATIONS = 8
 MAX_AUDIT_FAILURES = 2
+
+_READ_ONLY_TOOLS = {"get_imbalance_report", "get_candidate_options"}
 
 _INITIAL_USER_MESSAGE = "Run the repositioning analysis cycle for the current network state."
 _FINISH_PROMPT = "You must finish by calling submit_recommendations."
@@ -132,6 +138,7 @@ def _finalize_cycle(
     state: NetworkState,
     started_ts: datetime,
     trace: list[dict[str, Any]],
+    cycle_id: str,
 ) -> CycleResult:
     raw_recommendations = tool_input.get("recommendations") or []
     no_action_rationale = tool_input.get("no_action_rationale")
@@ -151,7 +158,7 @@ def _finalize_cycle(
         )
 
     return CycleResult(
-        cycle_id=f"CYCLE-{uuid.uuid4().hex[:12]}",
+        cycle_id=cycle_id,
         started_ts=started_ts,
         completed_ts=datetime.now(timezone.utc),
         recommendations=recommendations,
@@ -160,8 +167,86 @@ def _finalize_cycle(
     )
 
 
+def _process_tool_use_blocks(
+    tool_use_blocks: list[dict[str, Any]],
+    state: NetworkState,
+    params: ScoringParams,
+    started_ts: datetime,
+    cycle_id: str,
+    trace: list[dict[str, Any]],
+    audit_failures: int,
+) -> tuple[list[dict[str, Any]], CycleResult | None, int]:
+    """Process every tool_use block from one assistant turn, building exactly
+    one tool_result per id (in order) — the API rejects a follow-up request
+    that's missing a tool_result for any tool_use id from the prior turn."""
+    tool_results: list[dict[str, Any]] = []
+    submitted: CycleResult | None = None
+
+    for block in tool_use_blocks:
+        name = block["name"]
+        tool_input = block["input"]
+        trace.append({"type": "tool_call", "name": name, "input": tool_input})
+
+        if name == "submit_recommendations":
+            error = _audit_submission(tool_input, state, params)
+            if error is not None:
+                audit_failures += 1
+                trace.append(
+                    {"type": "tool_result", "name": name, "output": error, "is_error": True}
+                )
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block["id"],
+                        "content": error,
+                        "is_error": True,
+                    }
+                )
+                if audit_failures >= MAX_AUDIT_FAILURES:
+                    raise AgentAuditError(
+                        f"submit_recommendations failed the audit gate "
+                        f"{audit_failures} times: {error}"
+                    )
+                continue
+
+            # Record the tool_result for protocol completeness — even though
+            # we return before any follow-up request would use it — before
+            # finalizing, since _finalize_cycle snapshots trace into the
+            # returned CycleResult.
+            trace.append({"type": "tool_result", "name": name, "output": "accepted"})
+            tool_results.append(
+                {"type": "tool_result", "tool_use_id": block["id"], "content": "accepted"}
+            )
+            submitted = _finalize_cycle(tool_input, state, started_ts, trace, cycle_id)
+            continue
+
+        if name not in _READ_ONLY_TOOLS:
+            error_message = f"Unknown tool: {name!r}"
+            trace.append(
+                {"type": "tool_result", "name": name, "output": error_message, "is_error": True}
+            )
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block["id"],
+                    "content": error_message,
+                    "is_error": True,
+                }
+            )
+            continue
+
+        output = execute_tool(name, tool_input, state, params)
+        trace.append({"type": "tool_result", "name": name, "output": output})
+        tool_results.append(
+            {"type": "tool_result", "tool_use_id": block["id"], "content": output}
+        )
+
+    return tool_results, submitted, audit_failures
+
+
 async def run_analysis_cycle(seed: int | None = None) -> CycleResult:
     started_ts = datetime.now(timezone.utc)
+    cycle_id = f"CYCLE-{uuid.uuid4().hex[:12]}"
     state = get_network_state(seed=seed)
     params = get_scoring_params()
 
@@ -184,75 +269,71 @@ async def run_analysis_cycle(seed: int | None = None) -> CycleResult:
     audit_failures = 0
     reprompted = False
 
-    for _ in range(MAX_TOOL_ITERATIONS):
-        response = await client.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            tools=TOOL_DEFINITIONS,
-            messages=messages,
-        )
-
-        assistant_content = [_content_block_to_dict(block) for block in response.content]
-        messages.append({"role": "assistant", "content": assistant_content})
-
-        for block in assistant_content:
-            if block["type"] == "text":
-                trace.append({"type": "text", "text": block["text"]})
-
-        if response.stop_reason != "tool_use":
-            if reprompted:
-                raise AgentIncompleteError(
-                    "Model ended its turn without calling submit_recommendations."
-                )
-            reprompted = True
-            messages.append({"role": "user", "content": _FINISH_PROMPT})
-            continue
-
-        tool_results: list[dict[str, Any]] = []
-        submitted: CycleResult | None = None
-
-        for block in assistant_content:
-            if block["type"] != "tool_use":
-                continue
-            name = block["name"]
-            tool_input = block["input"]
-            trace.append({"type": "tool_call", "name": name, "input": tool_input})
-
-            if name == "submit_recommendations":
-                error = _audit_submission(tool_input, state, params)
-                if error is not None:
-                    audit_failures += 1
-                    trace.append(
-                        {"type": "tool_result", "name": name, "output": error, "is_error": True}
-                    )
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block["id"],
-                            "content": error,
-                            "is_error": True,
-                        }
-                    )
-                    if audit_failures >= MAX_AUDIT_FAILURES:
-                        raise AgentAuditError(
-                            f"submit_recommendations failed the audit gate "
-                            f"{audit_failures} times: {error}"
-                        )
-                    continue
-
-                submitted = _finalize_cycle(tool_input, state, started_ts, trace)
-                continue
-
-            output = execute_tool(name, tool_input, state, params)
-            trace.append({"type": "tool_result", "name": name, "output": output})
-            tool_results.append(
-                {"type": "tool_result", "tool_use_id": block["id"], "content": output}
+    try:
+        for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
+            response = await client.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=SYSTEM_PROMPT,
+                tools=TOOL_DEFINITIONS,
+                messages=messages,
             )
 
-        if submitted is not None:
-            return submitted
+            assistant_content = [_content_block_to_dict(block) for block in response.content]
+            messages.append({"role": "assistant", "content": assistant_content})
 
-        messages.append({"role": "user", "content": tool_results})
+            tool_use_blocks = [block for block in assistant_content if block["type"] == "tool_use"]
+            logger.info(
+                "cycle_id=%s iteration=%d/%d stop_reason=%s tools=%s",
+                cycle_id,
+                iteration,
+                MAX_TOOL_ITERATIONS,
+                response.stop_reason,
+                [block["name"] for block in tool_use_blocks],
+            )
 
-    raise AgentIncompleteError("Exceeded max tool iterations without submit_recommendations.")
+            for block in assistant_content:
+                if block["type"] == "text":
+                    trace.append({"type": "text", "text": block["text"]})
+
+            if response.stop_reason != "tool_use":
+                if reprompted:
+                    raise AgentIncompleteError(
+                        "Model ended its turn without calling submit_recommendations."
+                    )
+                reprompted = True
+                messages.append({"role": "user", "content": _FINISH_PROMPT})
+                continue
+
+            tool_results, submitted, audit_failures = _process_tool_use_blocks(
+                tool_use_blocks, state, params, started_ts, cycle_id, trace, audit_failures
+            )
+
+            if submitted is not None:
+                return submitted
+
+            messages.append({"role": "user", "content": tool_results})
+
+        raise AgentIncompleteError("Exceeded max tool iterations without submit_recommendations.")
+    except Exception as exc:
+        last_assistant_message = next(
+            (message for message in reversed(messages) if message["role"] == "assistant"), None
+        )
+        logger.error(
+            "cycle_id=%s failed: %s; last_assistant_content=%s",
+            cycle_id,
+            exc,
+            last_assistant_message["content"] if last_assistant_message else None,
+        )
+        save_cycle(
+            CycleResult(
+                cycle_id=cycle_id,
+                started_ts=started_ts,
+                completed_ts=datetime.now(timezone.utc),
+                recommendations=[],
+                no_action_rationale=None,
+                trace=trace,
+                error=str(exc),
+            )
+        )
+        raise
