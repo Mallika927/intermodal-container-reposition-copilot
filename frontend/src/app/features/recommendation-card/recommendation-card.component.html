@@ -1,0 +1,143 @@
+<article class="card rec-card">
+  <button
+    type="button"
+    class="rec-card__summary"
+    (click)="toggleExpanded()"
+    [attr.aria-expanded]="expanded()"
+  >
+    <span class="rec-card__lane">{{ recommendation().lane_id }}</span>
+    <span class="rec-card__units tabular-nums">{{ recommendation().units }} units</span>
+    <span class="priority-badge" [attr.data-priority]="recommendation().priority">
+      {{ recommendation().priority }}
+    </span>
+    <span class="rec-card__net tabular-nums">
+      {{ recommendation().net_benefit_usd | currency: 'USD' : 'symbol' : '1.0-0' }}
+    </span>
+    <span class="rec-card__chevron" [class.rec-card__chevron--open]="expanded()">&#9662;</span>
+  </button>
+
+  @if (expanded()) {
+    <div class="rec-card__details">
+      <p class="rec-card__reasoning">{{ recommendation().reasoning_summary }}</p>
+
+      @if (recommendation().risks.length > 0) {
+        <div class="rec-card__section">
+          <h3>Risks</h3>
+          <ul>
+            @for (risk of recommendation().risks; track risk) {
+              <li>{{ risk }}</li>
+            }
+          </ul>
+        </div>
+      }
+
+      @if (recommendation().alternatives_considered.length > 0) {
+        <div class="rec-card__section">
+          <h3>Alternatives considered</h3>
+          <ul>
+            @for (alt of recommendation().alternatives_considered; track alt.option_id) {
+              <li>
+                <strong>{{ alt.summary }}</strong> — {{ alt.rejected_because }}
+              </li>
+            }
+          </ul>
+        </div>
+      }
+
+      <div class="rec-card__section">
+        <h3>Execution legs</h3>
+        <table class="legs-table">
+          <thead>
+            <tr>
+              <th scope="col">Train</th>
+              <th scope="col" class="num">Units</th>
+              <th scope="col">Confidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (leg of recommendation().execution_legs; track leg.train_id) {
+              <tr>
+                <td>{{ leg.train_id }}</td>
+                <td class="num tabular-nums">{{ leg.units }}</td>
+                <td>{{ confidenceLabel(leg.confidence) }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  }
+
+  <footer class="rec-card__footer">
+    @if (recommendation().status === 'pending') {
+      @if (modifyOpen()) {
+        <div class="inline-form">
+          <label>
+            Units
+            <input
+              type="number"
+              min="1"
+              [ngModel]="modifiedUnitsValue()"
+              (ngModelChange)="modifiedUnitsValue.set($event)"
+            />
+          </label>
+          @if (modifyError()) {
+            <p class="inline-form__error">{{ modifyError() }}</p>
+          }
+          <div class="inline-form__actions">
+            <button type="button" class="btn btn--primary" (click)="confirmModify()">
+              Confirm modification
+            </button>
+            <button type="button" class="btn" (click)="cancelModify()">Cancel</button>
+          </div>
+        </div>
+      } @else if (rejectOpen()) {
+        <div class="inline-form">
+          <label>
+            Reason (required)
+            <textarea
+              rows="2"
+              [ngModel]="reasonValue()"
+              (ngModelChange)="reasonValue.set($event)"
+            ></textarea>
+          </label>
+          @if (rejectError()) {
+            <p class="inline-form__error">{{ rejectError() }}</p>
+          }
+          <div class="inline-form__actions">
+            <button type="button" class="btn btn--danger" (click)="confirmReject()">
+              Confirm rejection
+            </button>
+            <button type="button" class="btn" (click)="cancelReject()">Cancel</button>
+          </div>
+        </div>
+      } @else {
+        <div class="rec-card__actions">
+          <button
+            type="button"
+            class="btn btn--primary"
+            [disabled]="decisionInFlight()"
+            (click)="approve()"
+          >
+            Approve
+          </button>
+          <button type="button" class="btn" [disabled]="decisionInFlight()" (click)="openModify()">
+            Modify
+          </button>
+          <button
+            type="button"
+            class="btn btn--danger"
+            [disabled]="decisionInFlight()"
+            (click)="openReject()"
+          >
+            Reject
+          </button>
+        </div>
+      }
+    } @else {
+      <span class="status-chip" [attr.data-status]="recommendation().status">
+        {{ recommendation().status }}
+      </span>
+    }
+  </footer>
+</article>

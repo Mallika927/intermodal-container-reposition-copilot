@@ -1,0 +1,42 @@
+<section class="card">
+  <header class="card__header">
+    <h2>Network health</h2>
+  </header>
+
+  @if (sortedEntries().length === 0) {
+    <p class="empty">No imbalance data loaded yet.</p>
+  } @else {
+    <table class="health-table">
+      <thead>
+        <tr>
+          <th scope="col">Terminal</th>
+          <th scope="col" class="num">On hand</th>
+          <th scope="col" class="num">72h demand</th>
+          <th scope="col" class="num">Balance</th>
+          <th scope="col">Severity</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (entry of sortedEntries(); track entry.terminal) {
+          <tr>
+            <td>{{ entry.terminal }}</td>
+            <td class="num tabular-nums">{{ entry.on_hand }}</td>
+            <td class="num tabular-nums">{{ entry.demand_72h }}</td>
+            <td
+              class="num tabular-nums balance"
+              [class.balance--negative]="entry.projected_balance < 0"
+              [class.balance--positive]="entry.projected_balance > 0"
+            >
+              {{ signedBalance(entry.projected_balance) }}
+            </td>
+            <td>
+              <span class="severity-chip" [attr.data-severity]="entry.severity">
+                {{ entry.severity }}
+              </span>
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  }
+</section>

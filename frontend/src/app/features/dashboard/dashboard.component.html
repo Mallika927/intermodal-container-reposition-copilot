@@ -1,0 +1,60 @@
+<header class="dashboard__header">
+  <h1>Repositioning Copilot</h1>
+
+  <div class="dashboard__controls">
+    <label class="seed-input">
+      Seed
+      <input
+        type="number"
+        placeholder="default"
+        [ngModel]="seedValue()"
+        (ngModelChange)="seedValue.set($event)"
+      />
+    </label>
+
+    <button
+      type="button"
+      class="btn btn--primary"
+      [disabled]="store.loadingCycle()"
+      (click)="onRunCycle()"
+    >
+      {{ store.loadingCycle() ? 'Running…' : 'Run analysis cycle' }}
+    </button>
+
+    @if (store.cycle()?.replay) {
+      <span class="replay-chip">Replay mode</span>
+    }
+  </div>
+
+  @if (store.error()) {
+    <p class="dashboard__error">{{ store.error() }}</p>
+  }
+</header>
+
+<main class="dashboard__main">
+  <section class="dashboard__pane">
+    <app-network-health [entries]="store.imbalance()?.entries ?? []" />
+  </section>
+
+  <section class="dashboard__pane">
+    @if (store.cycle(); as cycle) {
+      @if (cycle.recommendations.length === 0) {
+        <div class="card empty-panel">
+          <p>{{ cycle.no_action_rationale ?? 'No recommendations for this cycle.' }}</p>
+        </div>
+      } @else {
+        @for (rec of store.sortedByPriorityThenNet(); track rec.id) {
+          <app-recommendation-card
+            [recommendation]="rec"
+            [decisionInFlight]="store.decisionInFlight()[rec.id] ?? false"
+            (decide)="onDecide(rec.id, $event)"
+          />
+        }
+      }
+    } @else {
+      <div class="card empty-panel">
+        <p>Run an analysis cycle to see recommendations.</p>
+      </div>
+    }
+  </section>
+</main>
