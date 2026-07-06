@@ -20,3 +20,4 @@ class CycleResult(BaseModel):
     recommendations: list[Recommendation]
     no_action_rationale: str | None
     trace: list[dict[str, Any]]
+    replay: bool = False
