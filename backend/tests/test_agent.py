@@ -31,6 +31,14 @@ from app.scoring.params import get_scoring_params
 FIXED_SNAPSHOT_TS = datetime(2026, 7, 4, 23, 0, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _default_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most tests here call run_analysis_cycle() directly, bypassing
+    app.main's load_dotenv(); give them a key so the presence guard passes
+    by default. Tests of the guard itself override this explicitly."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+
 @dataclass
 class FakeContentBlock:
     type: str
@@ -377,3 +385,34 @@ def test_decision_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     assert latest.status_code == 200
     updated_rec = next(r for r in latest.json()["recommendations"] if r["id"] == rec_id)
     assert updated_rec["status"] == "modified"
+
+
+def test_missing_api_key_returns_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("USE_REPLAY_MODE", "false")
+
+    client = TestClient(app)
+    response = client.post("/api/agent/run", params={"seed": 42})
+
+    assert response.status_code == 400
+    assert "ANTHROPIC_API_KEY not configured" in response.json()["detail"]
+
+
+def test_replay_mode_works_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("USE_REPLAY_MODE", "true")
+
+    client = TestClient(app)
+    response = client.post("/api/agent/run", params={"seed": 42})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["replay"] is True

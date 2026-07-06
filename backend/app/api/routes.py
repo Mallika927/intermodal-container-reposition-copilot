@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.agent.loop import run_analysis_cycle
 from app.agent.replay import build_replay_cycle
 from app.agent.schemas import CycleResult
+from app.agent.settings import get_agent_settings
 from app.agent.store import (
     get_recommendation,
     latest_cycle,
@@ -33,12 +33,6 @@ from app.scoring.imbalance import compute_imbalance
 from app.scoring.params import get_scoring_params
 
 router = APIRouter()
-
-
-class _AgentSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-    use_replay_mode: bool = False
 
 
 class DecisionRequest(BaseModel):
@@ -76,7 +70,7 @@ def read_candidates(
 async def run_agent_cycle(
     seed: int | None = Query(default=None, description="Override SYNTHETIC_DATA_SEED"),
 ) -> CycleResult:
-    if _AgentSettings().use_replay_mode:
+    if get_agent_settings().use_replay_mode:
         cycle = build_replay_cycle(seed)
     else:
         cycle = await run_analysis_cycle(seed=seed)

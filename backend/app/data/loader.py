@@ -8,10 +8,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.data.generator import generate_network_state
 from app.data.models import NetworkState
+from app.env import ENV_FILE
 
 
 class _DataSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=ENV_FILE, extra="ignore")
 
     synthetic_data_seed: int = 42
 

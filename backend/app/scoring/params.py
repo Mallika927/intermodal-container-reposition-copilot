@@ -11,9 +11,11 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.env import ENV_FILE
+
 
 class ScoringParams(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=ENV_FILE, extra="ignore")
 
     no_show_rate: float = 0.08
     safety_floor_ratio: float = 0.5
@@ -27,6 +29,8 @@ class ScoringParams(BaseSettings):
     aggressive_multiplier: float = 1.2
 
 
+# Safe to cache: this is only ever called lazily, from request handling,
+# which happens well after main.py's module-level load_dotenv() call.
 @lru_cache
 def get_scoring_params() -> ScoringParams:
     return ScoringParams()

@@ -11,9 +11,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from anthropic import AsyncAnthropic
+from fastapi import HTTPException
 
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.schemas import CycleResult
+from app.agent.settings import get_agent_settings
 from app.agent.tools import TOOL_DEFINITIONS, execute_tool
 from app.data.loader import get_network_state
 from app.data.models import NetworkState, Recommendation, RecommendationStatus
@@ -162,6 +164,15 @@ async def run_analysis_cycle(seed: int | None = None) -> CycleResult:
     started_ts = datetime.now(timezone.utc)
     state = get_network_state(seed=seed)
     params = get_scoring_params()
+
+    if not get_agent_settings().use_replay_mode and not os.getenv("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "ANTHROPIC_API_KEY not configured. Set it in backend/.env or "
+                "enable USE_REPLAY_MODE=true."
+            ),
+        )
 
     client = _build_client()
     model = _model_name()

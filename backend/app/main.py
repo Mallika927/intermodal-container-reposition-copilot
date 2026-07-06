@@ -1,7 +1,16 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
 
-from app.api.routes import router as api_router
+from dotenv import load_dotenv
+
+# Anchored to this file's path so .env loads regardless of the working
+# directory uvicorn is launched from. Must run before any app-package
+# import, since those may instantiate pydantic-settings classes.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+from app.api.routes import router as api_router  # noqa: E402
 
 app = FastAPI(
     title="Intermodal Container Reposition Copilot",
