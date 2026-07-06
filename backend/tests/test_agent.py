@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from app.agent import loop as loop_module
-from app.agent.loop import AgentAuditError, run_analysis_cycle
+from app.agent.loop import AgentAuditError, AgentIncompleteError, run_analysis_cycle
 from app.data.generator import generate_network_state
 from app.data.models import (
     BookingForecast,
@@ -100,6 +100,15 @@ def _parallel_tool_use_message(*calls: tuple[str, str, dict[str, Any]]) -> FakeM
             FakeContentBlock(type="tool_use", id=call_id, name=name, input=tool_input)
             for call_id, name, tool_input in calls
         ],
+    )
+
+
+def _truncated_message(tool_use_id: str, name: str) -> FakeMessage:
+    """Simulate a max_tokens cutoff mid tool-call: the model ran out of
+    output budget with an incomplete/empty tool_use input."""
+    return FakeMessage(
+        stop_reason="max_tokens",
+        content=[FakeContentBlock(type="tool_use", id=tool_use_id, name=name, input={})],
     )
 
 
@@ -237,6 +246,54 @@ def test_parallel_submit_with_read(monkeypatch: pytest.MonkeyPatch) -> None:
     tool_results = [entry["name"] for entry in result.trace if entry["type"] == "tool_result"]
     assert tool_calls == ["get_imbalance_report", "get_candidate_options", "submit_recommendations"]
     assert tool_results == ["get_imbalance_report", "get_candidate_options", "submit_recommendations"]
+
+
+def test_max_tokens_truncation_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    submission = _seed_42_top_option_submission()
+    fake = _install_fake_client(
+        monkeypatch,
+        [
+            _truncated_message("tu_1", "submit_recommendations"),
+            _tool_use_message("tu_2", "submit_recommendations", submission),
+        ],
+    )
+
+    result = asyncio.run(run_analysis_cycle(seed=42))
+
+    assert result.no_action_rationale is None
+    assert len(result.recommendations) == 1
+    assert fake.messages.call_count == 2
+
+    # The retry prompt must be the message sent right after the truncated
+    # turn, and no request may ever carry the dangling truncated tool_use.
+    second_call_messages = fake.messages.calls[1]["messages"]
+    retry_message = second_call_messages[-1]
+    assert retry_message["role"] == "user"
+    assert "truncated" in retry_message["content"]
+
+    for call in fake.messages.calls:
+        for message in call["messages"]:
+            if message["role"] != "assistant":
+                continue
+            for block in message["content"]:
+                assert not (block["type"] == "tool_use" and block["id"] == "tu_1"), (
+                    "dangling truncated tool_use must never be sent to the API"
+                )
+
+
+def test_max_tokens_truncation_hard_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _install_fake_client(
+        monkeypatch,
+        [
+            _truncated_message("tu_1", "submit_recommendations"),
+            _truncated_message("tu_2", "submit_recommendations"),
+        ],
+    )
+
+    with pytest.raises(AgentIncompleteError):
+        asyncio.run(run_analysis_cycle(seed=42))
+
+    assert fake.messages.call_count == 2
 
 
 def test_audit_gate_catches_altered_number(monkeypatch: pytest.MonkeyPatch) -> None:

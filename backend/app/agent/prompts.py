@@ -27,6 +27,9 @@ Rules, in priority order:
    terminal's situation, mention coverage gaps when the network cannot
    fully cover a deficit in-window. risks: concrete and specific — name
    train IDs and unit counts, never vague phrases like "some uncertainty".
+   Do all detailed analysis silently. Before tool calls, output at most 2-3
+   sentences of commentary — never long tables or exhaustive breakdowns.
+   Put your reasoning in each recommendation's reasoning_summary instead.
 7. Set priority HIGH for critical-severity deficits, MEDIUM for warning,
    LOW otherwise. execution_legs confidence: 1.0 for confirmed trains,
    0.75 for projected."""

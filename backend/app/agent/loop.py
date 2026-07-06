@@ -5,6 +5,7 @@ ever treated as trustworthy output.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -28,13 +29,20 @@ from app.scoring.params import ScoringParams, get_scoring_params
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
+MAX_TOKENS = 16000
 MAX_TOOL_ITERATIONS = 8
 MAX_AUDIT_FAILURES = 2
+MAX_TRUNCATION_RETRIES = 2
 
 _READ_ONLY_TOOLS = {"get_imbalance_report", "get_candidate_options"}
 
 _INITIAL_USER_MESSAGE = "Run the repositioning analysis cycle for the current network state."
 _FINISH_PROMPT = "You must finish by calling submit_recommendations."
+_TRUNCATION_RETRY_PROMPT = (
+    "Your previous response exceeded the output limit and was truncated "
+    "before the tool call completed. Respond again: keep any analysis to a "
+    "few sentences and proceed directly to the tool call."
+)
 
 
 class AgentAuditError(RuntimeError):
@@ -267,21 +275,20 @@ async def run_analysis_cycle(seed: int | None = None) -> CycleResult:
     ]
     trace: list[dict[str, Any]] = []
     audit_failures = 0
+    truncation_count = 0
     reprompted = False
 
     try:
         for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
             response = await client.messages.create(
                 model=model,
-                max_tokens=4096,
+                max_tokens=MAX_TOKENS,
                 system=SYSTEM_PROMPT,
                 tools=TOOL_DEFINITIONS,
                 messages=messages,
             )
 
             assistant_content = [_content_block_to_dict(block) for block in response.content]
-            messages.append({"role": "assistant", "content": assistant_content})
-
             tool_use_blocks = [block for block in assistant_content if block["type"] == "tool_use"]
             logger.info(
                 "cycle_id=%s iteration=%d/%d stop_reason=%s tools=%s",
@@ -291,6 +298,31 @@ async def run_analysis_cycle(seed: int | None = None) -> CycleResult:
                 response.stop_reason,
                 [block["name"] for block in tool_use_blocks],
             )
+
+            if response.stop_reason == "max_tokens":
+                truncation_count += 1
+                logger.warning(
+                    "cycle_id=%s iteration=%d truncated at max_tokens (attempt %d/%d); "
+                    "content_length=%d",
+                    cycle_id,
+                    iteration,
+                    truncation_count,
+                    MAX_TRUNCATION_RETRIES,
+                    len(json.dumps(assistant_content)),
+                )
+                if truncation_count >= MAX_TRUNCATION_RETRIES:
+                    raise AgentIncompleteError(
+                        f"Model's response was truncated at the token limit "
+                        f"{truncation_count} times; giving up."
+                    )
+                # Drop the truncated turn — it may contain a dangling
+                # tool_use with incomplete input, and the API rejects a
+                # follow-up request missing a tool_result for any tool_use
+                # id from the prior turn — so never append it as-is.
+                messages.append({"role": "user", "content": _TRUNCATION_RETRY_PROMPT})
+                continue
+
+            messages.append({"role": "assistant", "content": assistant_content})
 
             for block in assistant_content:
                 if block["type"] == "text":
