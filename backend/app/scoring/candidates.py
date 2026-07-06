@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from app.data.models import (
     BookingForecast,
     CandidateOption,
+    ExecutionLeg,
     ImbalanceEntry,
     ImbalanceReport,
     InventorySnapshot,
@@ -37,6 +38,27 @@ def _feasible_trains(
     ]
     feasible.sort(key=lambda train: train.departs_ts)
     return feasible
+
+
+def _suggested_legs(feasible: list[TrainCapacity], units: int) -> list[ExecutionLeg]:
+    """Fill `units` across the feasible trains, confirmed first (in
+    departure order), then projected — the ground truth an agent must copy
+    into a recommendation's execution_legs, never inventing train IDs."""
+    confirmed = [train for train in feasible if not train.is_projected]
+    projected = [train for train in feasible if train.is_projected]
+
+    legs: list[ExecutionLeg] = []
+    remaining = units
+    for train in confirmed + projected:
+        if remaining <= 0:
+            break
+        take = min(train.available_slots, remaining)
+        if take <= 0:
+            continue
+        confidence = 0.75 if train.is_projected else 1.0
+        legs.append(ExecutionLeg(train_id=train.train_id, units=take, confidence=confidence))
+        remaining -= take
+    return legs
 
 
 def _build_note(*, floor_breach: bool, flips_negative: bool, variant: str) -> str | None:
@@ -136,6 +158,7 @@ def generate_candidates(
                         storage_savings_usd=storage_savings_usd,
                         net_usd=net_usd,
                         origin_floor_breach=origin_floor_breach,
+                        suggested_legs=_suggested_legs(feasible, units),
                         note=_build_note(
                             floor_breach=origin_floor_breach,
                             flips_negative=flips_negative,

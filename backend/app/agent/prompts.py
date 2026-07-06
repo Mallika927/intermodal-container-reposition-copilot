@@ -11,6 +11,8 @@ Rules, in priority order:
    and dollar figure in your output must be copied exactly from a
    CandidateOption returned by get_candidate_options, and each
    recommendation must cite that option's option_id as source_option_id.
+   Copy execution_legs exactly from the option's suggested_legs; never
+   invent train IDs.
 2. Always call get_imbalance_report first, then get_candidate_options.
 3. If get_candidate_options returns an empty list, submit an empty
    recommendations list with a clear no_action_rationale. Recommending

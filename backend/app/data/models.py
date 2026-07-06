@@ -156,6 +156,12 @@ class ImbalanceReport(BaseModel):
     entries: list[ImbalanceEntry]
 
 
+class ExecutionLeg(BaseModel):
+    train_id: str
+    units: int = Field(..., gt=0)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+
+
 class CandidateOption(BaseModel):
     option_id: str
     origin: str
@@ -173,18 +179,20 @@ class CandidateOption(BaseModel):
     origin_floor_breach: bool = Field(
         ..., description="True if this move drops origin below its safety floor"
     )
+    suggested_legs: list[ExecutionLeg] = Field(
+        default_factory=list,
+        description=(
+            "Real train-by-train slot fill for `units` — ground truth for a "
+            "Recommendation's execution_legs; the agent must copy this exactly, "
+            "never invent train IDs."
+        ),
+    )
     note: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # Agent artifacts (LLM-synthesized, every number traceable to scoring)
 # ---------------------------------------------------------------------------
-
-
-class ExecutionLeg(BaseModel):
-    train_id: str
-    units: int = Field(..., gt=0)
-    confidence: float = Field(default=1.0, ge=0, le=1)
 
 
 class Recommendation(BaseModel):

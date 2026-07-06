@@ -20,7 +20,6 @@ from app.data.models import (
     ExecutionLeg,
     ImbalanceEntry,
     Lane,
-    NetworkState,
     Priority,
     Recommendation,
     RecommendationStatus,
@@ -30,33 +29,6 @@ from app.data.models import (
 from app.scoring.candidates import generate_candidates
 from app.scoring.imbalance import compute_imbalance
 from app.scoring.params import get_scoring_params
-
-
-def _execution_legs(
-    option: CandidateOption, lane: Lane, state: NetworkState, window_end: datetime
-) -> list[ExecutionLeg]:
-    feasible = [
-        train
-        for train in state.trains
-        if train.lane_id == lane.id
-        and train.departs_ts + timedelta(hours=lane.transit_hrs) <= window_end
-    ]
-    feasible.sort(key=lambda train: train.departs_ts)
-    confirmed = [train for train in feasible if not train.is_projected]
-    projected = [train for train in feasible if train.is_projected]
-
-    legs: list[ExecutionLeg] = []
-    remaining = option.units
-    for train in confirmed + projected:
-        if remaining <= 0:
-            break
-        take = min(train.available_slots, remaining)
-        if take <= 0:
-            continue
-        confidence = 0.75 if train.is_projected else 1.0
-        legs.append(ExecutionLeg(train_id=train.train_id, units=take, confidence=confidence))
-        remaining -= take
-    return legs
 
 
 def _rejected_because(chosen: CandidateOption, runner_up: CandidateOption) -> str:
@@ -159,10 +131,7 @@ def build_replay_cycle(seed: int | None) -> CycleResult:
             None,
         )
 
-        deficit_booking_window_end = next(
-            booking.window_end for booking in state.bookings if booking.terminal_code == deficit.terminal
-        )
-        legs = _execution_legs(chosen, lane, state, deficit_booking_window_end)
+        legs = chosen.suggested_legs
         coverage_gap = max(0, abs(deficit.projected_balance) - chosen.units)
 
         alternatives_considered = (

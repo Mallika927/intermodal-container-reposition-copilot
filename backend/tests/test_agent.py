@@ -120,7 +120,8 @@ def _install_fake_client(monkeypatch: pytest.MonkeyPatch, responses: list[FakeMe
 
 def _seed_42_top_option_submission() -> dict[str, Any]:
     """Build a valid submit_recommendations payload for seed 42's top option,
-    with every number copied directly from the real candidate list."""
+    with every number — including execution_legs — copied directly from the
+    real candidate list's suggested_legs, never invented."""
     state = generate_network_state(seed=42, snapshot_ts=FIXED_SNAPSHOT_TS)
     params = get_scoring_params()
     report = compute_imbalance(state, params)
@@ -131,18 +132,14 @@ def _seed_42_top_option_submission() -> dict[str, Any]:
     runner_up = next(o for o in options if o.option_id == "OPT-CHI-G4-KCS-IC-cover")
     lane = next(l for l in state.lanes if l.origin_code == top.origin and l.dest_code == top.dest)
 
-    confirmed_units = top.feasible_slots_72h
-    projected_units = top.units - confirmed_units
+    projected_leg = next((leg for leg in top.suggested_legs if leg.confidence < 1.0), None)
 
     recommendation = {
         "lane_id": lane.id,
         "equipment_type": top.equipment_type.value,
         "units": top.units,
         "priority": "HIGH",
-        "execution_legs": [
-            {"train_id": "ZLADE-01", "units": confirmed_units, "confidence": 1.0},
-            {"train_id": "ZLADE-02", "units": projected_units, "confidence": 0.75},
-        ],
+        "execution_legs": [leg.model_dump(mode="json") for leg in top.suggested_legs],
         "cost_usd": top.cost_usd,
         "revenue_protected_usd": top.revenue_protected_usd,
         "net_benefit_usd": top.net_usd,
@@ -152,9 +149,14 @@ def _seed_42_top_option_submission() -> dict[str, Any]:
             "move relies on a projected train since confirmed slots don't "
             "fully cover the gap."
         ),
-        "risks": [
-            f"{projected_units} of {top.units} units ride on projected train ZLADE-02, not yet confirmed."
-        ],
+        "risks": (
+            [
+                f"{projected_leg.units} of {top.units} units ride on projected train "
+                f"{projected_leg.train_id}, not yet confirmed."
+            ]
+            if projected_leg
+            else []
+        ),
         "alternatives_considered": [
             {
                 "option_id": runner_up.option_id,
@@ -324,6 +326,47 @@ def test_audit_gate_catches_altered_number(monkeypatch: pytest.MonkeyPatch) -> N
     assert "cost_usd" in error_results[0]["output"]
 
 
+def test_audit_gate_catches_invented_train_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    good_submission = _seed_42_top_option_submission()
+    good_recommendation = good_submission["recommendations"][0]
+    bad_submission = {
+        "recommendations": [
+            {
+                **good_recommendation,
+                "execution_legs": [
+                    {"train_id": "ZMADE-UP-01", "units": good_recommendation["units"], "confidence": 1.0}
+                ],
+            }
+        ],
+        "no_action_rationale": None,
+    }
+
+    fake = _install_fake_client(
+        monkeypatch,
+        [
+            _tool_use_message("tu_1", "get_imbalance_report", {}),
+            _tool_use_message("tu_2", "get_candidate_options", {}),
+            _tool_use_message("tu_3", "submit_recommendations", bad_submission),
+            _tool_use_message("tu_4", "submit_recommendations", good_submission),
+        ],
+    )
+
+    result = asyncio.run(run_analysis_cycle(seed=42))
+
+    actual_train_ids = {leg.train_id for leg in result.recommendations[0].execution_legs}
+    expected_train_ids = {leg["train_id"] for leg in good_recommendation["execution_legs"]}
+    assert actual_train_ids == expected_train_ids
+    assert "ZMADE-UP-01" not in actual_train_ids
+    assert fake.messages.call_count == 4
+    error_results = [entry for entry in result.trace if entry.get("is_error")]
+    assert len(error_results) == 1
+    assert "suggested_legs" in error_results[0]["output"]
+    # The error lists the expected (real) train IDs, not the invented one.
+    for train_id in expected_train_ids:
+        assert train_id in error_results[0]["output"]
+    assert "ZMADE-UP-01" not in error_results[0]["output"]
+
+
 def test_audit_gate_catches_duplicate_lane(monkeypatch: pytest.MonkeyPatch) -> None:
     state = generate_network_state(seed=42, snapshot_ts=FIXED_SNAPSHOT_TS)
     params = get_scoring_params()
@@ -340,9 +383,7 @@ def test_audit_gate_catches_duplicate_lane(monkeypatch: pytest.MonkeyPatch) -> N
             "equipment_type": option.equipment_type.value,
             "units": option.units,
             "priority": "HIGH",
-            "execution_legs": [
-                {"train_id": "ZCHKC-01", "units": option.units, "confidence": 1.0}
-            ],
+            "execution_legs": [leg.model_dump(mode="json") for leg in option.suggested_legs],
             "cost_usd": option.cost_usd,
             "revenue_protected_usd": option.revenue_protected_usd,
             "net_benefit_usd": option.net_usd,

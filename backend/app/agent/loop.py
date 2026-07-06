@@ -114,12 +114,17 @@ def _audit_submission(
                     f"got {actual}."
                 )
 
+        expected_legs = sorted((leg.train_id, leg.units) for leg in option.suggested_legs)
         execution_legs = rec.get("execution_legs") or []
-        legs_total = sum(leg.get("units", 0) for leg in execution_legs)
-        if legs_total != rec.get("units"):
+        actual_legs = sorted(
+            (leg.get("train_id"), leg.get("units")) for leg in execution_legs
+        )
+        if actual_legs != expected_legs:
+            expected_str = ", ".join(f"{train_id}:{units}" for train_id, units in expected_legs)
             return (
-                f"execution_legs total units ({legs_total}) does not equal units "
-                f"({rec.get('units')}) for {source_option_id}."
+                f"execution_legs for {source_option_id} do not match the option's "
+                f"suggested_legs (same train_ids and units required); expected "
+                f"[{expected_str}]."
             )
 
         expected_lane = lanes_by_od.get((option.origin, option.dest))
