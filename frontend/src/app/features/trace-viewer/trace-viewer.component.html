@@ -1,0 +1,32 @@
+<details class="card trace-viewer">
+  <summary class="trace-viewer__summary">Agent trace ({{ trace().length }} events)</summary>
+
+  <div class="trace-viewer__body">
+    @if (trace().length === 0) {
+      <p class="empty">No trace recorded for this cycle.</p>
+    }
+
+    @for (entry of trace(); track $index) {
+      @switch (entry.type) {
+        @case ('text') {
+          <p class="trace-text">{{ asText(entry) }}</p>
+        }
+        @case ('tool_call') {
+          <div class="tool-chip">
+            <span class="tool-chip__label">call · {{ asName(entry) }}</span>
+            <pre class="tool-chip__body">{{ prettyInput(entry) }}</pre>
+          </div>
+        }
+        @case ('tool_result') {
+          <details class="tool-result" [class.tool-result--error]="isError(entry)">
+            <summary>result · {{ asName(entry) }}</summary>
+            <pre class="tool-chip__body">{{ prettyOutput(entry) }}</pre>
+          </details>
+        }
+        @default {
+          <pre class="tool-chip__body">{{ entry | json }}</pre>
+        }
+      }
+    }
+  </div>
+</details>

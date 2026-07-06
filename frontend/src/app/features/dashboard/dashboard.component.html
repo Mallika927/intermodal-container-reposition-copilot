@@ -34,6 +34,10 @@
 <main class="dashboard__main">
   <section class="dashboard__pane">
     <app-network-health [entries]="store.imbalance()?.entries ?? []" />
+
+    @if (store.cycle(); as cycle) {
+      <app-trace-viewer [trace]="cycle.trace" />
+    }
   </section>
 
   <section class="dashboard__pane">

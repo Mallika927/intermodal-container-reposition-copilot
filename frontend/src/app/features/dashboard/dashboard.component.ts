@@ -4,10 +4,11 @@ import { FormsModule } from '@angular/forms';
 import { CycleStore } from '../../state/cycle.store';
 import { NetworkHealthComponent } from '../network-health/network-health.component';
 import { DecidePayload, RecommendationCardComponent } from '../recommendation-card/recommendation-card.component';
+import { TraceViewerComponent } from '../trace-viewer/trace-viewer.component';
 
 @Component({
   selector: 'app-dashboard',
-  imports: [FormsModule, NetworkHealthComponent, RecommendationCardComponent],
+  imports: [FormsModule, NetworkHealthComponent, RecommendationCardComponent, TraceViewerComponent],
   templateUrl: './dashboard.component.html',
   styleUrl: './dashboard.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
