@@ -60,8 +60,14 @@ def _audit_submission(
     """Return None if the submission passes the audit gate, else a
     human-readable description of the first mismatch found."""
     recommendations = tool_input.get("recommendations") or []
+    no_action_rationale = tool_input.get("no_action_rationale")
+
     if not recommendations:
+        if not isinstance(no_action_rationale, str) or not no_action_rationale.strip():
+            return "recommendations is empty but no_action_rationale is missing or empty."
         return None
+    if no_action_rationale is not None:
+        return "no_action_rationale must be null when recommendations is non-empty."
 
     report = compute_imbalance(state, params)
     options_by_id = {
@@ -69,6 +75,7 @@ def _audit_submission(
     }
     lanes_by_od = {(lane.origin_code, lane.dest_code): lane for lane in state.lanes}
 
+    seen_lane_ids: set[str] = set()
     for rec in recommendations:
         source_option_id = rec.get("source_option_id")
         option = options_by_id.get(source_option_id)
@@ -101,11 +108,19 @@ def _audit_submission(
 
         expected_lane = lanes_by_od.get((option.origin, option.dest))
         expected_lane_id = expected_lane.id if expected_lane else None
-        if rec.get("lane_id") != expected_lane_id:
+        lane_id = rec.get("lane_id")
+        if lane_id != expected_lane_id:
             return (
                 f"lane_id mismatch for {source_option_id}: expected "
-                f"'{expected_lane_id}', got {rec.get('lane_id')}."
+                f"'{expected_lane_id}', got {lane_id}."
             )
+
+        if lane_id in seen_lane_ids:
+            return (
+                f"multiple recommendations target lane '{lane_id}'; at most one "
+                "recommendation per lane is allowed per cycle."
+            )
+        seen_lane_ids.add(lane_id)
 
     return None
 

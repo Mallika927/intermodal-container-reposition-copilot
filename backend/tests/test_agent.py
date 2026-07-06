@@ -180,6 +180,86 @@ def test_audit_gate_catches_altered_number(monkeypatch: pytest.MonkeyPatch) -> N
     assert "cost_usd" in error_results[0]["output"]
 
 
+def test_audit_gate_catches_duplicate_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = generate_network_state(seed=42, snapshot_ts=FIXED_SNAPSHOT_TS)
+    params = get_scoring_params()
+    report = compute_imbalance(state, params)
+    options = generate_candidates(state, report, params)
+
+    cover = next(o for o in options if o.option_id == "OPT-CHI-G4-KCS-IC-cover")
+    confirmed = next(o for o in options if o.option_id == "OPT-CHI-G4-KCS-IC-confirmed")
+    lane = next(l for l in state.lanes if l.origin_code == cover.origin and l.dest_code == cover.dest)
+
+    def _rec_for(option: Any) -> dict[str, Any]:
+        return {
+            "lane_id": lane.id,
+            "equipment_type": option.equipment_type.value,
+            "units": option.units,
+            "priority": "HIGH",
+            "execution_legs": [
+                {"train_id": "ZCHKC-01", "units": option.units, "confidence": 1.0}
+            ],
+            "cost_usd": option.cost_usd,
+            "revenue_protected_usd": option.revenue_protected_usd,
+            "net_benefit_usd": option.net_usd,
+            "reasoning_summary": "KCS-IC is critically short; this move addresses it.",
+            "risks": ["Placeholder risk for duplicate-lane audit test."],
+            "alternatives_considered": [],
+            "source_option_id": option.option_id,
+        }
+
+    duplicate_lane_submission = {
+        "recommendations": [_rec_for(cover), _rec_for(confirmed)],
+        "no_action_rationale": None,
+    }
+    good_submission = _seed_42_top_option_submission()
+
+    fake = _install_fake_client(
+        monkeypatch,
+        [
+            _tool_use_message("tu_1", "get_imbalance_report", {}),
+            _tool_use_message("tu_2", "get_candidate_options", {}),
+            _tool_use_message("tu_3", "submit_recommendations", duplicate_lane_submission),
+            _tool_use_message("tu_4", "submit_recommendations", good_submission),
+        ],
+    )
+
+    result = asyncio.run(run_analysis_cycle(seed=42))
+
+    assert result.recommendations[0].source_option_id == "OPT-LAX-ICTF-DEN-RG-cover"
+    assert fake.messages.call_count == 4
+    error_results = [entry for entry in result.trace if entry.get("is_error")]
+    assert len(error_results) == 1
+    assert lane.id in error_results[0]["output"]
+
+
+def test_audit_gate_catches_missing_no_action_rationale(monkeypatch: pytest.MonkeyPatch) -> None:
+    bad_submission = {"recommendations": [], "no_action_rationale": None}
+    good_submission = {
+        "recommendations": [],
+        "no_action_rationale": "All terminals are within tolerance; no deficit requires action.",
+    }
+
+    fake = _install_fake_client(
+        monkeypatch,
+        [
+            _tool_use_message("tu_1", "get_imbalance_report", {}),
+            _tool_use_message("tu_2", "get_candidate_options", {}),
+            _tool_use_message("tu_3", "submit_recommendations", bad_submission),
+            _tool_use_message("tu_4", "submit_recommendations", good_submission),
+        ],
+    )
+
+    result = asyncio.run(run_analysis_cycle(seed=42))
+
+    assert result.recommendations == []
+    assert result.no_action_rationale == good_submission["no_action_rationale"]
+    assert fake.messages.call_count == 4
+    error_results = [entry for entry in result.trace if entry.get("is_error")]
+    assert len(error_results) == 1
+    assert "no_action_rationale" in error_results[0]["output"]
+
+
 def test_audit_gate_hard_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     good_submission = _seed_42_top_option_submission()
     bad_submission = {
